@@ -35,6 +35,7 @@ struct soc_button_info {
 struct soc_device_data {
 	const struct soc_button_info *button_info;
 	int (*check)(struct device *dev);
+	bool check_probe_defer;
 };
 
 /*
@@ -152,7 +153,8 @@ static int soc_button_lookup_gpio(struct device *dev, int acpi_index,
 static struct platform_device *
 soc_button_device_create(struct platform_device *pdev,
 			 const struct soc_button_info *button_info,
-			 bool autorepeat)
+			 bool autorepeat,
+			 bool check_probe_defer)
 {
 	const struct soc_button_info *info;
 	struct platform_device *pd;
@@ -190,6 +192,13 @@ soc_button_device_create(struct platform_device *pdev,
 
 		error = soc_button_lookup_gpio(&pdev->dev, info->acpi_index, &gpio, &irq);
 		if (error || irq < 0) {
+			/*
+			 * If the device explicitly requests checking for probe deferral
+			 * (e.g. Surface devices waiting on pinctrl), honor it.
+			 */
+			if (check_probe_defer && error == -EPROBE_DEFER)
+				return ERR_PTR(error);
+
 			/*
 			 * Skip GPIO if not present. Note we deliberately
 			 * ignore -EPROBE_DEFER errors here. On some devices
@@ -465,7 +474,8 @@ static int soc_button_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 
 	for (i = 0; i < BUTTON_TYPES; i++) {
-		pd = soc_button_device_create(pdev, button_info, i == 0);
+		pd = soc_button_device_create(pdev, button_info, i == 0,
+			device_data ? device_data->check_probe_defer : false);
 		if (IS_ERR(pd)) {
 			error = PTR_ERR(pd);
 			if (error != -ENODEV) {
@@ -559,7 +569,7 @@ static int soc_device_check_MSHW0040(struct device *dev)
 				MSHW0040_DSM_REVISION,
 				BIT(MSHW0040_DSM_GET_OMPR));
 
-	return exists ? 0 : -ENODEV;
+	return exists ? 0 : -EPROBE_DEFER;
 }
 
 /*
@@ -576,6 +586,7 @@ static const struct soc_button_info soc_button_MSHW0040[] = {
 static const struct soc_device_data soc_device_MSHW0040 = {
 	.button_info = soc_button_MSHW0040,
 	.check = soc_device_check_MSHW0040,
+	.check_probe_defer = true,
 };
 
 static const struct acpi_device_id soc_button_acpi_match[] = {
